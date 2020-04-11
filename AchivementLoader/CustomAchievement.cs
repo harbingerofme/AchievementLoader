@@ -1,7 +1,7 @@
 ﻿using RoR2;
 using System;
 
-namespace Dak.AchievementLoader.CustomAchievement
+namespace Dak.AchievementLoader
 {
 	/// <summary>
 	/// Adds a custom unlock to Risk of Rain 2's unlock catalog
@@ -31,6 +31,7 @@ namespace Dak.AchievementLoader.CustomAchievement
 		}
 	}
 
+	/*
 	/// <summary>
 	/// Overrides the specified achievement
 	/// </summary>
@@ -47,4 +48,5 @@ namespace Dak.AchievementLoader.CustomAchievement
 			this.achievementType = achievementType;
 		}
 	}
+	*/
 }

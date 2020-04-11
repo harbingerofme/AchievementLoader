@@ -8,235 +8,92 @@ using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using BepInEx.Logging;
-using Dak.AchievementLoader.CustomAchievement;
+using Dak.AchievementLoader;
+using System.Reflection;
+using MonoMod.Cil;
+using Mono.Cecil;
+using System.Reflection.Emit;
+using Mono.Cecil.Cil;
+using System.Xml;
 
 namespace Dak.AchievementLoader
 {
-    [BepInPlugin("com.dakkhuza.plugins.achievementloader", "AchievementLoader", "1.0.0")]
+    [BepInPlugin("harbingerofme.forked.dakkhuza.plugins.achievementloader", "AchievementLoader", "3.0.0")]
     public class AchievementLoader : BaseUnityPlugin
     {
+		static public readonly List<Assembly> toScan = new List<Assembly>();
+		static private readonly List<Type> validType = new List<Type>();
+		static private Type CurrentlyScanning;
+
+		static public void ScanMyAssembly()
+		{
+			toScan.Add(Assembly.GetCallingAssembly());
+		}
+
 		void Awake()
 		{
-			//Create the harmony instance and patch them methods
-			var harmony = new Harmony("com.dakkhuza.patchers.achievementloader");
-			harmony.PatchAll();
+			On.RoR2.UnlockableCatalog.Init += UnlockableCatalog_Init;
+			On.RoR2.AchievementManager.CollectAchievementDefs += AchievementManager_CollectAchievementDefs;
+#if DEBUG
+			ScanMyAssembly();
+#endif
 		}
-	}
 
-	[HarmonyPatch(typeof(UnlockableCatalog), "Init")]
-	class PatchUnlockable
-	{
-		static bool Prefix(ref Dictionary<string, UnlockableDef> ___nameToDefTable)
+
+		private void UnlockableCatalog_Init(On.RoR2.UnlockableCatalog.orig_Init orig)
 		{
-			//Set up logging
-			var unlockableLogger = new ManualLogSource("AchievementLoader.Unlock");
-			BepInEx.Logging.Logger.Sources.Add(unlockableLogger);
-			unlockableLogger.LogMessage("__== Unlock Loader ==__");
-
-			unlockableLogger.LogInfo("Searching for custom unlockables...");
-
-			//Build a list of all CustomUnlocks
-			var customUnlockableDefs =
-			from a in AppDomain.CurrentDomain.GetAssemblies()
-			from t in a.GetTypes()
-			let attributes = t.GetCustomAttributes(typeof(CustomUnlockable), true)
-			where attributes != null && attributes.Length > 0
-			select(attributes.Cast<CustomUnlockable>().ToArray()[0]);
-
-			if (customUnlockableDefs.Count() > 0)
+			MethodInfo RegisterUnlockable = typeof(UnlockableCatalog).GetMethod("RegisterUnlockable", BindingFlags.NonPublic | BindingFlags.Static);
+			
+			foreach(Assembly assembly in toScan)
 			{
-				unlockableLogger.LogInfo(string.Format("Found {0} custom unlock(s) to add to catalog", customUnlockableDefs.Count()));
-
-				//Iterate through each custom unlock and add them to the unlock catalog
-
-				foreach (CustomUnlockable customUnlock in customUnlockableDefs)
+				bool hasFoundT = false;
+				foreach (Type t in assembly.GetTypes())
 				{
-					//Create new unlock def
-					UnlockableDef newUnlock = customUnlock.GetUnlockableDef();
-
-					//Set the index of the unlock def
-					newUnlock.index = new UnlockableIndex(___nameToDefTable.Count);
-
-					//Add the def to the unlock table
-					___nameToDefTable.Add(newUnlock.name, newUnlock);
-
-					unlockableLogger.LogDebug(string.Format("Added Custom Unlock {0}", newUnlock.name));
-				}
-			}else
-			{
-				unlockableLogger.LogInfo("Found no custom unlocks to add");
-			}
-			unlockableLogger.LogInfo("Done!");
-
-			//Continue on the the original unlock catalog
-			return true;
-		}
-	}
-
-	[HarmonyPatch(typeof(AchievementManager), "CollectAchievementDefs")]
-	class PatchManager
-	{
-		static bool Prefix(ref Dictionary<string, AchievementDef> ___achievementNamesToDefs, ref List<string> ___achievementIdentifiers, ref AchievementDef[] ___achievementDefs, ref AchievementDef[] ___serverAchievementDefs, ref Action ___onAchievementsRegistered, Dictionary<string, AchievementDef> map)
-		{
-			//Setup logging
-			var achievementLogger = new ManualLogSource("AchievementLoader.Achievement");
-			achievementLogger.LogMessage("__== Achievement Loader ==__");
-			BepInEx.Logging.Logger.Sources.Add(achievementLogger);
-
-			achievementLogger.LogInfo("Searching for overrides");
-
-			//Search and collect overrides
-			IEnumerable<Type> achievementOverrides = 
-				from a in AppDomain.CurrentDomain.GetAssemblies()
-				from t in a.GetTypes()
-				let attributes = t.GetCustomAttributes(typeof(OverrideAchievement), true)
-				where attributes != null && attributes.Length > 0
-				select (attributes.Cast<OverrideAchievement>().ToArray()[0].achievementType);
-
-			//Convert from IEnum to List since it's way faster to search a list lmao
-			List<Type> achievementOverrideTypes = achievementOverrides.ToList();
-
-			achievementLogger.LogInfo(string.Format("Found {0} overrides", achievementOverrides.Count()));
-
-			//Used for building achievement unlock chains?
-			List<AchievementDef> list = new List<AchievementDef>();
-
-			//Used for building achievement unlock chains?
-			map.Clear();
-
-			//Get all classes that inherit from BaseAchievement
-			foreach (Type achievementClass in from type in (AppDomain.CurrentDomain.GetAssemblies()
-			.Where(a => !a.IsDynamic)
-            .SelectMany(a => a.GetTypes()))
-								   where type.IsSubclassOf(typeof(BaseAchievement))
-								   orderby type.Name
-								   select type)
-			{
-				//Check if the achievement has an override defined
-				if (achievementOverrideTypes.Contains(achievementClass))
-				{
-					//If it does, don't add it
-					continue;
-				}
-
-				//Get the achievement attribute
-				RegisterAchievementAttribute registerAchievementAttribute = (RegisterAchievementAttribute)Attribute.GetCustomAttribute(achievementClass, typeof(RegisterAchievementAttribute));
-
-				//Check if the achievement was registered
-				if (registerAchievementAttribute != null)
-				{
-					//Check to see if the achievement was overrided
-
-
-					//Make sure each achievement is unique
-					if (map.ContainsKey(registerAchievementAttribute.identifier))
+					var attr = t.GetCustomAttributes(typeof(CustomUnlockable),true).Cast<CustomUnlockable>().ToArray();
+					if (attr.Length  > 0)
 					{
-						Debug.LogErrorFormat("Class {0} attempted to register as achievement {1}, but class {2} has already registered as that achievement.", new object[]
+						UnlockableDef uDef = attr[0].GetUnlockableDef();
+						RegisterUnlockable.Invoke(null, new object[] { uDef.name, uDef });
+						if (hasFoundT == false)
 						{
-					achievementClass.FullName,
-					registerAchievementAttribute.identifier,
-					___achievementNamesToDefs[registerAchievementAttribute.identifier].type.FullName
-						});
-                    }
-					else
-					{
-						//If  the achievement is unique, build the achievement
-						AchievementDef achievementDef2 = new AchievementDef
-						{
-							identifier = registerAchievementAttribute.identifier,
-							unlockableRewardIdentifier = registerAchievementAttribute.unlockableRewardIdentifier,
-							prerequisiteAchievementIdentifier = registerAchievementAttribute.prerequisiteAchievementIdentifier,
-							nameToken = "ACHIEVEMENT_" + registerAchievementAttribute.identifier.ToUpper(CultureInfo.InvariantCulture) + "_NAME",
-							descriptionToken = "ACHIEVEMENT_" + registerAchievementAttribute.identifier.ToUpper(CultureInfo.InvariantCulture) + "_DESCRIPTION",
-							iconPath = "Textures/AchievementIcons/tex" + registerAchievementAttribute.identifier + "Icon",
-							type = achievementClass,
-							serverTrackerType = registerAchievementAttribute.serverTrackerType
-						};
-						//Add the achievement identifier to the achievement identifier list
-						___achievementIdentifiers.Add(registerAchievementAttribute.identifier);
-
-						//Used for building achievement unlock chains?
-						map.Add(registerAchievementAttribute.identifier, achievementDef2);
-
-						//Used to build achievement defs array?
-						list.Add(achievementDef2);
-
-						//Get the related unlockable def
-						UnlockableDef unlockableDef = UnlockableCatalog.GetUnlockableDef(achievementDef2.unlockableRewardIdentifier);
-
-						//If there is an unlockable def, set the how to unlock and unlocked text
-						if (unlockableDef != null)
-						{
-							string achievementName = Language.GetString(achievementDef2.nameToken);
-							string achievementDescription = Language.GetString(achievementDef2.descriptionToken);
-							unlockableDef.getHowToUnlockString = (() => Language.GetStringFormatted("UNLOCK_VIA_ACHIEVEMENT_FORMAT", new object[]
-							{
-								achievementName,
-								achievementDescription
-							}));
-
-							unlockableDef.getUnlockedString = (() => Language.GetStringFormatted("UNLOCKED_FORMAT", new object[]
-							{
-								achievementName,
-								achievementDescription
-							}));
+							hasFoundT = true;
+							validType.Add(t);
 						}
 					}
-				}else
-				{
-					//Warn that a class inheriting from BaseAchievement doesn't have a AchievementAttribute
-					string msg = string.Format("Class {0} in {1} inherits from BaseAchievement but doesn't have a RegisterAchievement attribute.", new object[] { achievementClass.FullName, achievementClass.Assembly.GetName().Name });
-					achievementLogger.LogWarning(msg);
 				}
 			}
 
-			___achievementDefs = list.ToArray();
+			orig();
+		}
 
-			//Order achievements
-			___achievementDefs = ___achievementDefs.OrderBy(def => UnlockableCatalog.GetUnlockableSortScore(def.unlockableRewardIdentifier)).ToArray();
-
-			//Get achievements that need to be server tracked
-			___serverAchievementDefs = (from achievementDef in ___achievementDefs
-														where achievementDef.serverTrackerType != null
-														select achievementDef).ToArray<AchievementDef>();
-
-			//Build achievements to be tracked by client?
-			for (int i = 0; i < ___achievementDefs.Length; i++)
+		private void AchievementManager_CollectAchievementDefs(On.RoR2.AchievementManager.orig_CollectAchievementDefs orig, Dictionary<string, AchievementDef> map)
+		{
+			validType.Add(typeof(BaseAchievement));
+			map.Clear();
+			foreach (Type type in validType)
 			{
-				___achievementDefs[i].index = new AchievementIndex
-				{
-					intValue = i
-				};
+				CurrentlyScanning = type;
+				IL.RoR2.AchievementManager.CollectAchievementDefs += AchievementManager_CollectAchievementDefs1;
+				orig(map);
+				IL.RoR2.AchievementManager.CollectAchievementDefs -= AchievementManager_CollectAchievementDefs1;
 			}
+		}
 
-			//Build achievements to be tracked by server?
-			for (int j = 0; j < ___serverAchievementDefs.Length; j++)
-			{
-				___serverAchievementDefs[j].serverIndex = new ServerAchievementIndex
-				{
-					intValue = j
-				};
-			}
 
-			//Build achievement requirement chains?
-			for (int k = 0; k < ___achievementIdentifiers.Count; k++)
-			{
-				string currentAchievementIdentifier = ___achievementIdentifiers[k];
-				map[currentAchievementIdentifier].childAchievementIdentifiers = (from v in ___achievementIdentifiers
-																				 where map[v].prerequisiteAchievementIdentifier == currentAchievementIdentifier
-																				 select v).ToArray<string>();
-			}
+		private void AchievementManager_CollectAchievementDefs1(MonoMod.Cil.ILContext il)
+		{
+			ILCursor c = new ILCursor(il);
+			
+			//Remove map.Clear();
+			c.GotoNext(MoveType.Before,
+				x => x.MatchCallOrCallvirt("System.Collections.Generic.Dictionary`2<System.String,RoR2.AchievementDef>","Clear")
+			);
+			c.Index -= 2;
+			c.RemoveRange(3);
 
-			//Let the system know all achievements have been created
-			Action action = ___onAchievementsRegistered;
-			if (action == null)
-			{
-				return false;
-			}
-			action();
-
-			//Skip the original code
-			return false;
+			//Replace the BaseAchievementToken
+			c.Remove();
+			c.Emit(Mono.Cecil.Cil.OpCodes.Ldtoken, CurrentlyScanning);
 		}
 	}
 }
