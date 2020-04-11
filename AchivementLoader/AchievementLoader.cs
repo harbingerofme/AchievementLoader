@@ -1,20 +1,13 @@
 ﻿using BepInEx;
 using RoR2;
 using RoR2.Achievements;
-using HarmonyLib;
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
-using UnityEngine;
-using BepInEx.Logging;
-using Dak.AchievementLoader;
 using System.Reflection;
 using MonoMod.Cil;
-using Mono.Cecil;
-using System.Reflection.Emit;
+using RoR2.UI;
 using Mono.Cecil.Cil;
-using System.Xml;
 
 namespace Dak.AchievementLoader
 {
@@ -22,8 +15,7 @@ namespace Dak.AchievementLoader
     public class AchievementLoader : BaseUnityPlugin
     {
 		static public readonly List<Assembly> toScan = new List<Assembly>();
-		static private readonly List<Type> validType = new List<Type>();
-		static private Type CurrentlyScanning;
+		static private Assembly CurrentlyScanning;
 
 		static public void ScanMyAssembly()
 		{
@@ -34,11 +26,11 @@ namespace Dak.AchievementLoader
 		{
 			On.RoR2.UnlockableCatalog.Init += UnlockableCatalog_Init;
 			On.RoR2.AchievementManager.CollectAchievementDefs += AchievementManager_CollectAchievementDefs;
+			IL.RoR2.AchievementManager.CollectAchievementDefs += AchievementManager_CollectAchievementDefs1;
 #if DEBUG
 			ScanMyAssembly();
 #endif
 		}
-
 
 		private void UnlockableCatalog_Init(On.RoR2.UnlockableCatalog.orig_Init orig)
 		{
@@ -46,7 +38,6 @@ namespace Dak.AchievementLoader
 			
 			foreach(Assembly assembly in toScan)
 			{
-				bool hasFoundT = false;
 				foreach (Type t in assembly.GetTypes())
 				{
 					var attr = t.GetCustomAttributes(typeof(CustomUnlockable),true).Cast<CustomUnlockable>().ToArray();
@@ -54,36 +45,31 @@ namespace Dak.AchievementLoader
 					{
 						UnlockableDef uDef = attr[0].GetUnlockableDef();
 						RegisterUnlockable.Invoke(null, new object[] { uDef.name, uDef });
-						if (hasFoundT == false)
-						{
-							hasFoundT = true;
-							validType.Add(t);
-						}
 					}
 				}
 			}
-
 			orig();
 		}
 
 		private void AchievementManager_CollectAchievementDefs(On.RoR2.AchievementManager.orig_CollectAchievementDefs orig, Dictionary<string, AchievementDef> map)
 		{
-			validType.Add(typeof(BaseAchievement));
+			toScan.Add(typeof(BaseAchievement).Assembly);
 			map.Clear();
-			foreach (Type type in validType)
+			foreach (Assembly assembly in toScan)
 			{
-				CurrentlyScanning = type;
-				IL.RoR2.AchievementManager.CollectAchievementDefs += AchievementManager_CollectAchievementDefs1;
+				CurrentlyScanning = assembly;
 				orig(map);
-				IL.RoR2.AchievementManager.CollectAchievementDefs -= AchievementManager_CollectAchievementDefs1;
 			}
+			var TheOnlySubscribedDelegate = typeof(AchievementListPanelController).GetMethod("BuildAchievementListOrder", BindingFlags.Static | BindingFlags.NonPublic);
+			TheOnlySubscribedDelegate.Invoke(null,null);
 		}
 
-
-		private void AchievementManager_CollectAchievementDefs1(MonoMod.Cil.ILContext il)
+		private void AchievementManager_CollectAchievementDefs1(ILContext il)
 		{
 			ILCursor c = new ILCursor(il);
-			
+
+			FieldInfo curScanfld = typeof(AchievementLoader).GetField("CurrentlyScanning", BindingFlags.NonPublic | BindingFlags.Static);
+
 			//Remove map.Clear();
 			c.GotoNext(MoveType.Before,
 				x => x.MatchCallOrCallvirt("System.Collections.Generic.Dictionary`2<System.String,RoR2.AchievementDef>","Clear")
@@ -92,8 +78,13 @@ namespace Dak.AchievementLoader
 			c.RemoveRange(3);
 
 			//Replace the BaseAchievementToken
-			c.Remove();
-			c.Emit(Mono.Cecil.Cil.OpCodes.Ldtoken, CurrentlyScanning);
+			//followed by a typeof()
+			//followeb by get_Assembly()
+			c.RemoveRange(3);
+			c.Emit(OpCodes.Ldsfld, curScanfld);
+
+			c.GotoNext(MoveType.Before, x => x.MatchLdsfld("RoR2.AchievementManager", "onAchievementsRegistered"));
+			c.Emit(OpCodes.Ret);
 		}
 	}
 }
