@@ -77,9 +77,7 @@ namespace Dak.AchievementLoader
 			c.Index -= 2;
 			c.RemoveRange(3);
 
-			//Replace the BaseAchievementToken
-			//followed by a typeof()
-			//followeb by get_Assembly()
+
 			c.RemoveRange(3);
 			c.Emit(OpCodes.Ldsfld, curScanfld);
 
